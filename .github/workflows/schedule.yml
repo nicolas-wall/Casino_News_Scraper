@@ -1,0 +1,35 @@
+name: Daily News Scraper
+
+on:
+  schedule:
+    # 10:00 UTC es 07:00 AM en Argentina (UTC-3)
+    - cron: '0 10 * * *'
+  # Permite ejecutarlo manualmente desde GitHub si quieres probarlo
+  workflow_dispatch:
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        # Instalar tokenizers de NLTK requeridos por newspaper3k
+        python -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('punkt_tab', quiet=True)"
+
+    - name: Run Scraper
+      env:
+        SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+        SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: python main.py

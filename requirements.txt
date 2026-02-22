@@ -1,0 +1,6 @@
+# Dependencias del proyecto de Extracción de Noticias
+newspaper3k==0.2.8
+requests==2.31.0
+beautifulsoup4==4.12.2
+lxml==4.9.3 # Requerido por newspaper3k para parsear correctamente
+python-dotenv==1.0.0
