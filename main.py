@@ -24,14 +24,9 @@ def load_sites(file_path="sites.txt"):
 def is_recent(publish_date, hours=24):
     """Verifica si un artículo fue publicado en las últimas 'hours' horas."""
     if not publish_date:
-        # Si no detecta fecha, puede que nos perdamos la noticia o incluyamos muy viejas.
-        # Por precaución para este script, si no hay fecha, no la incluimos (o la marcamos para revisión).
-        # Aunque para evitar un correo gigante, mejor ignorarlas si no sabemos la fecha,
-        # o asumimos que al estar en la página principal es reciente.
-        # Vamos a asumir que es reciente si la acabamos de encontrar en la portada, 
-        # pero es peligroso en newspaper3k porque agarra TODO el sitio.
-        # Mejor devolver False si está estrictamente vacío, salvo que queramos ser laxos.
-        return False
+        # Algunos sitios fallan en entregar la fecha metadata.
+        # Asumiremos que es reciente si está en portada.
+        return True
         
     # Asegurarnos de usar offsets (timezone aware)
     now = datetime.now(timezone.utc)
@@ -93,7 +88,8 @@ def extract_news(sites, hours=24):
                 print(f"  -> newspaper3k no detectó artículos, usando fallback manual...")
                 # 2. Fallback: Parsear manualmente con requests y bs4 si newspaper falla
                 try:
-                    headers = {'User-Agent': config.browser_user_agent}
+                    # Algunos dominios (como cdcgaming) bloquean ciertas librerías, usar session
+                    headers = {'User-Agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
                     response = requests.get(site_url, headers=headers, timeout=60)
                     response.raise_for_status()
                     
@@ -105,12 +101,15 @@ def extract_news(sites, hours=24):
                     for a in links:
                         href = a['href']
                         # Filtro heurístico básico de noticia (tiene fecha en la url o es lo bastante largo)
-                        if len(href) > 30 and (href.count('-') > 3 or '/news/' in href or '/article/' in href):
+                        if len(href) > 25 and not any(skip in href.lower() for skip in ['/about', '/contact', '/privacy', '/terms', '/author', '/category', '/tag']):
                             if not href.startswith('http'):
                                 # Arreglar enlaces relativos
                                 base = site_url.rstrip('/')
                                 href = f"{base}/{href.lstrip('/')}"
-                            found_urls.add(href)
+                            
+                            # Solo agregamos si pertenece al sitio original (no links externos)
+                            if site_url.split('//')[-1].split('/')[0] in href:
+                                found_urls.add(href)
                             
                     print(f"  -> Fallback detectó {len(found_urls)} posibles URLs de artículos.")
                     
@@ -193,7 +192,7 @@ def generate_html_report(news_data):
             domain = item['site'].split('//')[-1].split('/')[0]
             
             # Limpiar descripción (tomar solo un fragmento si es muy larga)
-            desc = item['description']
+            desc = item.get('description') or "Sin descripción disponible."
             if len(desc) > 250:
                 desc = desc[:247] + "..."
                 
