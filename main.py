@@ -1,23 +1,29 @@
 import os
 import time
+import re
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-import newspaper
-from newspaper import Article, ArticleException, Config
+import feedparser
 import requests
 from bs4 import BeautifulSoup
+from newspaper import Article, Config
 import smtplib
 from email.message import EmailMessage
 from email.utils import formatdate
+
+# ─── Configuración ───────────────────────────────────────────────────────────
+
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+REQUEST_TIMEOUT = 60
+
+# ─── Utilidades ──────────────────────────────────────────────────────────────
 
 def load_sites(file_path="sites.txt"):
     """Lee la lista de sitios desde el archivo de texto."""
     if not os.path.exists(file_path):
         print(f"Error: No se encontró el archivo '{file_path}'.")
         return []
-        
     with open(file_path, 'r', encoding='utf-8') as f:
-        # Filtrar lineas vacías o comentarios
         sites = [line.strip() for line in f if line.strip() and not line.startswith('#')]
     return sites
 
@@ -25,146 +31,245 @@ def is_recent(publish_date, hours=24):
     """Verifica si un artículo fue publicado en las últimas 'hours' horas."""
     if not publish_date:
         return False
-        
-    # Asegurarnos de usar offsets (timezone aware)
     now = datetime.now(timezone.utc)
-    
-    # Si la fecha extraída no tiene timezone, la asumimos como local (o UTC)
     if publish_date.tzinfo is None:
         publish_date = publish_date.replace(tzinfo=timezone.utc)
-        
     diff = now - publish_date
     return diff <= timedelta(hours=hours)
 
-def extract_news(sites, hours=24):
-    """Accede a cada sitio y extrae noticias recientes usando newspaper y un fallback."""
-    all_news = []
+def parse_date(date_string):
+    """Intenta parsear una fecha desde un string con múltiples formatos."""
+    if not date_string:
+        return None
+    try:
+        from dateutil import parser as date_parser
+        return date_parser.parse(date_string)
+    except Exception:
+        return None
+
+# ─── Método 1: RSS Feed (Preferido) ─────────────────────────────────────────
+
+def discover_rss_feed(site_url):
+    """Intenta descubrir el feed RSS de un sitio web."""
+    headers = {"User-Agent": USER_AGENT}
     
-    # Configurar newspaper con timeouts aumentados para no dejar afuera sitios lentos
+    # 1. Probar URLs comunes de feeds RSS
+    base = site_url.rstrip('/')
+    common_paths = ['/feed/', '/feed', '/rss/', '/rss', '/feed/rss/', '/atom.xml', '/rss.xml']
+    
+    for path in common_paths:
+        feed_url = base + path
+        try:
+            r = requests.get(feed_url, headers=headers, timeout=10)
+            if r.status_code == 200 and ('xml' in r.headers.get('Content-Type', '').lower() or '<rss' in r.text[:500].lower() or '<feed' in r.text[:500].lower()):
+                return feed_url
+        except Exception:
+            continue
+    
+    # 2. Buscar en el HTML del sitio con la etiqueta <link type="application/rss+xml">
+    try:
+        r = requests.get(site_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        link = soup.find('link', type='application/rss+xml')
+        if link and link.get('href'):
+            href = link['href']
+            if not href.startswith('http'):
+                href = base + '/' + href.lstrip('/')
+            return href
+        link = soup.find('link', type='application/atom+xml')
+        if link and link.get('href'):
+            href = link['href']
+            if not href.startswith('http'):
+                href = base + '/' + href.lstrip('/')
+            return href
+    except Exception:
+        pass
+    
+    return None
+
+def extract_from_rss(site_url, feed_url, hours=24):
+    """Extrae noticias recientes desde un feed RSS."""
+    articles = []
+    headers = {"User-Agent": USER_AGENT}
+    
+    try:
+        r = requests.get(feed_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        feed = feedparser.parse(r.content)
+        
+        if not feed.entries:
+            return articles
+            
+        print(f"  -> RSS Feed detectó {len(feed.entries)} entradas.")
+        
+        for entry in feed.entries:
+            # Extraer fecha de publicación
+            pub_date = None
+            for date_field in ['published', 'updated', 'created']:
+                if hasattr(entry, date_field) and getattr(entry, date_field):
+                    pub_date = parse_date(getattr(entry, date_field))
+                    if pub_date:
+                        break
+            
+            if not is_recent(pub_date, hours):
+                continue
+            
+            # Extraer título y enlace
+            title = entry.get('title', 'Sin título')
+            link = entry.get('link', '')
+            
+            # Extraer descripción
+            desc = ''
+            if hasattr(entry, 'summary') and entry.summary:
+                # Limpiar HTML de la descripción
+                desc_soup = BeautifulSoup(entry.summary, 'html.parser')
+                desc = desc_soup.get_text(strip=True)
+            elif hasattr(entry, 'description') and entry.description:
+                desc_soup = BeautifulSoup(entry.description, 'html.parser')
+                desc = desc_soup.get_text(strip=True)
+            
+            if not desc:
+                desc = "Sin descripción disponible."
+            
+            articles.append({
+                'site': site_url,
+                'title': title,
+                'url': link,
+                'description': desc,
+                'publish_date': pub_date
+            })
+    except Exception as e:
+        print(f"  -> Error leyendo RSS: {e}")
+    
+    return articles
+
+# ─── Método 2: Scraping con newspaper3k (Fallback) ──────────────────────────
+
+def extract_from_scraping(site_url, hours=24):
+    """Extrae noticias usando newspaper3k y BeautifulSoup como fallback."""
+    articles = []
+    
     config = Config()
-    config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
-    config.request_timeout = 60 # 60 segundos máximo por request
+    config.browser_user_agent = USER_AGENT
+    config.request_timeout = REQUEST_TIMEOUT
     config.memoize_articles = False
     
-    for site_url in sites:
-        print(f"Analizando: {site_url}")
-        recent_articles_for_site = []
+    try:
+        import newspaper
+        paper = newspaper.build(site_url, config=config, language='es')
         
-        try:
-            # 1. Intentar con newspaper3k primero
-            paper = newspaper.build(site_url, config=config, language='es')
-            
-            # Si el sitio bloqueó newspaper o falló su parsing general, la lista estará vacía
-            if paper.articles:
-                print(f"  -> newspaper3k detectó {len(paper.articles)} artículos potenciales.")
-                for article in paper.articles:
+        if paper.articles:
+            print(f"  -> newspaper3k detectó {len(paper.articles)} artículos potenciales.")
+            for article in paper.articles:
+                try:
+                    article.config = config
+                    article.download()
+                    article.parse()
+                    
+                    # Fallback manual para extraer fecha si newspaper3k falla
+                    if not article.publish_date and article.html:
+                        soup_article = BeautifulSoup(article.html, 'html.parser')
+                        meta_date = soup_article.find('meta', property='article:published_time')
+                        if meta_date and meta_date.get('content'):
+                            article.publish_date = parse_date(meta_date['content'])
+                    
+                    if is_recent(article.publish_date, hours):
+                        try:
+                            article.nlp()
+                            desc = article.summary if article.summary else article.meta_description
+                        except Exception:
+                            desc = article.meta_description
+                        
+                        articles.append({
+                            'site': site_url,
+                            'title': article.title,
+                            'url': article.url,
+                            'description': desc or "Sin descripción disponible.",
+                            'publish_date': article.publish_date
+                        })
+                except Exception:
+                    continue
+        else:
+            print(f"  -> newspaper3k no detectó artículos, usando fallback manual...")
+            # Fallback con BeautifulSoup
+            try:
+                headers = {'User-Agent': USER_AGENT}
+                response = requests.get(site_url, headers=headers, timeout=REQUEST_TIMEOUT)
+                response.raise_for_status()
+                
+                soup = BeautifulSoup(response.text, 'html.parser')
+                links = soup.find_all('a', href=True)
+                
+                found_urls = set()
+                domain = site_url.split('//')[-1].split('/')[0]
+                for a in links:
+                    href = a['href']
+                    if len(href) > 25 and not any(skip in href.lower() for skip in ['/about', '/contact', '/privacy', '/terms', '/author', '/category', '/tag']):
+                        if not href.startswith('http'):
+                            base = site_url.rstrip('/')
+                            href = f"{base}/{href.lstrip('/')}"
+                        if domain in href:
+                            found_urls.add(href)
+                
+                print(f"  -> Fallback detectó {len(found_urls)} posibles URLs.")
+                
+                for url in list(found_urls):
                     try:
-                        article.config = config
+                        article = Article(url, config=config)
                         article.download()
                         article.parse()
                         
-                        # Fallback manual para extraer fecha si newspaper3k falla
                         if not article.publish_date and article.html:
                             soup_article = BeautifulSoup(article.html, 'html.parser')
                             meta_date = soup_article.find('meta', property='article:published_time')
                             if meta_date and meta_date.get('content'):
-                                try:
-                                    from dateutil import parser as date_parser
-                                    article.publish_date = date_parser.parse(meta_date['content'])
-                                except Exception:
-                                    pass
-
+                                article.publish_date = parse_date(meta_date['content'])
+                        
                         if is_recent(article.publish_date, hours):
-                            # Evita usar nlp() si no lo necesitamos estrictamente para no ralentizar,
-                            # o usamos un timeout en la vida real, pero nlp() aquí es local y rápido
-                            # si el tokenizador ya está bajado.
-                            try:
-                                article.nlp() 
-                                desc = article.summary if article.summary else article.meta_description
-                            except Exception:
-                                desc = article.meta_description
-                                
-                            recent_articles_for_site.append({
+                            articles.append({
                                 'site': site_url,
                                 'title': article.title,
                                 'url': article.url,
-                                'description': desc,
+                                'description': article.meta_description or "Sin descripción disponible.",
                                 'publish_date': article.publish_date
                             })
-                    except Exception as e:
-                        continue # Ignorar artículo que falla
-            else:
-                print(f"  -> newspaper3k no detectó artículos, usando fallback manual...")
-                # 2. Fallback: Parsear manualmente con requests y bs4 si newspaper falla
-                try:
-                    # Algunos dominios (como cdcgaming) bloquean ciertas librerías, usar session
-                    headers = {'User-Agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
-                    response = requests.get(site_url, headers=headers, timeout=60)
-                    response.raise_for_status()
-                    
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    # Buscar enlaces que comúnmente son artículos (esto es heurístico)
-                    links = soup.find_all('a', href=True)
-                    
-                    found_urls = set()
-                    for a in links:
-                        href = a['href']
-                        # Filtro heurístico básico de noticia (tiene fecha en la url o es lo bastante largo)
-                        if len(href) > 25 and not any(skip in href.lower() for skip in ['/about', '/contact', '/privacy', '/terms', '/author', '/category', '/tag']):
-                            if not href.startswith('http'):
-                                # Arreglar enlaces relativos
-                                base = site_url.rstrip('/')
-                                href = f"{base}/{href.lstrip('/')}"
-                            
-                            # Solo agregamos si pertenece al sitio original (no links externos)
-                            if site_url.split('//')[-1].split('/')[0] in href:
-                                found_urls.add(href)
-                            
-                    print(f"  -> Fallback detectó {len(found_urls)} posibles URLs de artículos.")
-                    
-                    for url in list(found_urls): # Revisar todos los enlaces encontrados en el fallback
-                        try:
-                            # Parsear artículo individual con newspaper
-                            article = Article(url, config=config)
-                            article.download()
-                            article.parse()
-                            
-                            # Fallback manual para extraer fecha si newspaper3k falla
-                            if not article.publish_date and article.html:
-                                soup_article = BeautifulSoup(article.html, 'html.parser')
-                                meta_date = soup_article.find('meta', property='article:published_time')
-                                if meta_date and meta_date.get('content'):
-                                    try:
-                                        from dateutil import parser as date_parser
-                                        article.publish_date = date_parser.parse(meta_date['content'])
-                                    except Exception:
-                                        pass
+                    except Exception:
+                        continue
+            except Exception as e:
+                print(f"  -> Fallback falló: {e}")
+    except Exception as e:
+        print(f"  -> Error en scraping: {e}")
+    
+    return articles
 
-                            if is_recent(article.publish_date, hours):
-                                recent_articles_for_site.append({
-                                    'site': site_url,
-                                    'title': article.title,
-                                    'url': article.url,
-                                    'description': article.meta_description,
-                                    'publish_date': article.publish_date
-                                })
-                        except Exception:
-                            continue
-                except Exception as eval_e:
-                    print(f"  -> Fallback falló: {eval_e}")
+# ─── Orquestador Principal ───────────────────────────────────────────────────
 
-            print(f"  -> Extraídas {len(recent_articles_for_site)} noticias válidas (últimas {hours}h).")
-            all_news.extend(recent_articles_for_site)
-            
-        except Exception as e:
-            print(f"Error procesando el sitio {site_url}: {e}")
-            
+def extract_news(sites, hours=24):
+    """Para cada sitio, intenta RSS primero, si no hay RSS usa scraping."""
+    all_news = []
+    
+    for site_url in sites:
+        print(f"\nAnalizando: {site_url}")
+        
+        # Paso 1: Intentar descubrir RSS
+        feed_url = discover_rss_feed(site_url)
+        
+        if feed_url:
+            print(f"  -> Feed RSS encontrado: {feed_url}")
+            articles = extract_from_rss(site_url, feed_url, hours)
+        else:
+            print(f"  -> No se encontró RSS, usando scraping...")
+            articles = extract_from_scraping(site_url, hours)
+        
+        print(f"  -> Extraídas {len(articles)} noticias válidas (últimas {hours}h).")
+        all_news.extend(articles)
+    
     return all_news
+
+# ─── Generador de Reporte HTML ───────────────────────────────────────────────
 
 def generate_html_report(news_data):
     """Genera un string con código HTML bonito para el correo."""
     
-    # CSS minimalista y moderno
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -181,6 +286,7 @@ def generate_html_report(news_data):
             .article { margin-bottom: 30px; border-bottom: 1px solid #eee; padding-bottom: 20px; }
             .article:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
             .source { display: inline-block; background-color: #e0e7ff; color: #3730a3; padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+            .method { display: inline-block; background-color: #d1fae5; color: #065f46; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
             .title { margin: 0 0 10px 0; font-size: 18px; line-height: 1.4; color: #1f2937; }
             .title a { color: #2563eb; text-decoration: none; transition: color 0.2s; }
             .title a:hover { color: #1d4ed8; text-decoration: underline; }
@@ -205,13 +311,9 @@ def generate_html_report(news_data):
                 </div>
         """
     else:
-        # Agrupar por sitio o simplemente listar ordenado
-        # Aquí listamos tal cual el orden de scraping
         for item in news_data:
-            # Obtener el dominio base para mostrarlo de forma bonita
             domain = item['site'].split('//')[-1].split('/')[0]
             
-            # Limpiar descripción (tomar solo un fragmento si es muy larga)
             desc = item.get('description') or "Sin descripción disponible."
             if len(desc) > 250:
                 desc = desc[:247] + "..."
@@ -224,7 +326,6 @@ def generate_html_report(news_data):
                 </div>
             """
             
-    # Cerrar HTML
     fecha_hoy = datetime.now().strftime("%d de %B, %Y")
     html_content += f"""
             </div>
@@ -237,6 +338,8 @@ def generate_html_report(news_data):
     """
     
     return html_content
+
+# ─── Envío de Correo ─────────────────────────────────────────────────────────
 
 def send_email_report(html_content, recipient, smtp_user, smtp_pass):
     """Envía el correo electrónico en formato HTML usando SMTP de Gmail."""
@@ -252,12 +355,10 @@ def send_email_report(html_content, recipient, smtp_user, smtp_pass):
     msg['To'] = recipient
     msg['Date'] = formatdate(localtime=True)
     
-    # Para que los clientes de correo lo interpreten como HTML
     msg.set_content("Tu cliente de correo no soporta HTML, por favor ábrelo en uno compatible.")
     msg.add_alternative(html_content, subtype='html')
     
     try:
-        # Configuración para Gmail (usar puerto 587 con STARTTLS)
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.ehlo()
             server.starttls()
@@ -265,15 +366,15 @@ def send_email_report(html_content, recipient, smtp_user, smtp_pass):
             server.send_message(msg)
             print("Correo enviado exitosamente.")
             return True
-            
     except Exception as e:
         print(f"Error enviando correo: {e}")
         return False
 
+# ─── Main ────────────────────────────────────────────────────────────────────
+
 def main():
     load_dotenv()
     
-    # 1. Cargar sitios
     sites = load_sites("sites.txt")
     if not sites:
         print("No hay sitios para analizar. Saliendo.")
@@ -281,8 +382,6 @@ def main():
         
     print(f"Se encontraron {len(sites)} sitios para analizar.")
     
-    # IMPORTANTE: Para usar article.nlp() en newspaper3k
-    # Es posible que se requiera descargar el corpus punkt de NLTK la primera vez.
     import nltk
     try:
         nltk.data.find('tokenizers/punkt')
@@ -293,27 +392,21 @@ def main():
     except LookupError:
         nltk.download('punkt_tab', quiet=True)
     
-    # 2. Extraer noticias (Últimas 24 horas)
     print("\nIniciando extracción de noticias...")
     news_data = extract_news(sites, hours=24)
     
     if not news_data:
         print("\nNo se encontraron noticias publicadas en las últimas 24 horas.")
-        # Opcionalmente, igual enviamos el correo avisando que no hay noticias.
-        # En este script enviaremos el correo igual.
         
     print(f"\nExtracción finalizada. Total de noticias recientes: {len(news_data)}")
     
-    # 3. Generar el HTML
     print("\nGenerando reporte HTML...")
     html_report = generate_html_report(news_data)
     
-    # Guardar localmente para debugging/verificación por si acaso
     with open("last_report.html", "w", encoding="utf-8") as f:
         f.write(html_report)
     print("Reporte HTML guardado localmente como 'last_report.html'.")
     
-    # 4. Enviar por correo
     smtp_user = os.getenv("SMTP_EMAIL")
     smtp_pass = os.getenv("SMTP_PASSWORD")
     recipient = os.getenv("RECIPIENT_EMAIL")
