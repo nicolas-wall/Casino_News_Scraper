@@ -1,30 +1,28 @@
-# Casino News Scraper
+# Casino & iGaming News Scraper 🎰🗞️
 
-Script automatizado para extraer noticias de las últimas 24 horas de una lista de sitios web y generar un reporte HTML enviado por correo electrónico.
+An automated Python tool designed to scrape the latest news articles (published within the last 24 hours) from a customized list of top Casino and iGaming industry news websites.
 
-## Configuración Local
+## What it does
 
-1. Clona el repositorio.
-2. Opcional: Crea un entorno virtual (`python -m venv .venv` y actívalo).
-3. Instala las dependencias: `pip install -r requirements.txt`
-4. Edita el archivo `sites.txt` agregando las URLs que quieres monitorear (una por línea).
-5. Crea un archivo `.env` basado en `.env.example` y agrega tus credenciales.
+- **Automated Scraping**: Visits a predefined list of URLs (configured in `sites.txt`).
+- **Smart Extraction**: Uses `newspaper3k` and a custom BeautifulSoup fallback to detect and extract article titles, links, and brief descriptions.
+- **Time Filtering**: Filters the articles to only include those published in the last 24 hours.
+- **HTML Email Reports**: Generates a clean, responsive HTML report highlighting the web source, title, and a brief description of each news piece.
+- **Automated Delivery**: The report is sent daily at 7:00 AM UTC via email, powered entirely by GitHub Actions, meaning zero local server maintenance is required.
 
-## ¿Cómo generar una Contraseña de Aplicación en Google (Gmail)?
+## Configuration (GitHub Actions)
 
-Para que el script y GitHub Actions puedan enviar correos desde tu cuenta de Gmail **sin comprometer tu cuenta principal y evadiendo la verificación de 2 pasos**, debes usar una "App Password".
+To run this automatically on your own GitHub repository, you need to configure the following **Repository Secrets** (Under `Settings` > `Secrets and variables` > `Actions`):
 
-1. Ve a tu [Cuenta de Google](https://myaccount.google.com/).
-2. Busca la pestaña de **Seguridad** en el panel lateral a la izquierda.
-3. Asegúrate de tener activada la **Verificación en dos pasos** (es un requisito).
-4. En la barra de búsqueda superior de tu cuenta de Google, escribe **Contraseñas de aplicación** (o "App passwords").
-5. Haz clic en el resultado. Te pedirá tu contraseña normal.
-6. En el campo para describir la aplicación, escribe algo como "News Scraper GitHub" y haz clic en "Crear".
-7. Te aparecerá un recuadro con un código de 16 letras. **Esa es tu contraseña de aplicación**.
-8. Cópiala y pégala en tu archivo local `.env` como `SMTP_PASSWORD` y, más adelante, la guardaremos como un `Secret` en GitHub para que funcione automáticamente a las 7 AM.
+- `SMTP_EMAIL`: The Gmail address used to send the emails.
+- `SMTP_PASSWORD`: A 16-character [Google App Password](https://myaccount.google.com/apppasswords) generated for the sender account.
+- `RECIPIENT_EMAIL`: The email address where the daily report should be delivered.
 
-## Uso Manual
+## Local Development
 
-```bash
-python main.py
-```
+If you wish to run the scraper locally:
+
+1. Clone the repository.
+2. Install the required dependencies: `pip install -r requirements.txt`
+3. Create a `.env` file based on `.env.example` and add your email credentials.
+4. Run the script: `python main.py`
