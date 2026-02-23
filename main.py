@@ -24,9 +24,7 @@ def load_sites(file_path="sites.txt"):
 def is_recent(publish_date, hours=24):
     """Verifica si un artículo fue publicado en las últimas 'hours' horas."""
     if not publish_date:
-        # Algunos sitios fallan en entregar la fecha metadata.
-        # Asumiremos que es reciente si está en portada.
-        return True
+        return False
         
     # Asegurarnos de usar offsets (timezone aware)
     now = datetime.now(timezone.utc)
@@ -65,6 +63,17 @@ def extract_news(sites, hours=24):
                         article.download()
                         article.parse()
                         
+                        # Fallback manual para extraer fecha si newspaper3k falla
+                        if not article.publish_date and article.html:
+                            soup_article = BeautifulSoup(article.html, 'html.parser')
+                            meta_date = soup_article.find('meta', property='article:published_time')
+                            if meta_date and meta_date.get('content'):
+                                try:
+                                    from dateutil import parser as date_parser
+                                    article.publish_date = date_parser.parse(meta_date['content'])
+                                except Exception:
+                                    pass
+
                         if is_recent(article.publish_date, hours):
                             # Evita usar nlp() si no lo necesitamos estrictamente para no ralentizar,
                             # o usamos un timeout en la vida real, pero nlp() aquí es local y rápido
@@ -120,6 +129,17 @@ def extract_news(sites, hours=24):
                             article.download()
                             article.parse()
                             
+                            # Fallback manual para extraer fecha si newspaper3k falla
+                            if not article.publish_date and article.html:
+                                soup_article = BeautifulSoup(article.html, 'html.parser')
+                                meta_date = soup_article.find('meta', property='article:published_time')
+                                if meta_date and meta_date.get('content'):
+                                    try:
+                                        from dateutil import parser as date_parser
+                                        article.publish_date = date_parser.parse(meta_date['content'])
+                                    except Exception:
+                                        pass
+
                             if is_recent(article.publish_date, hours):
                                 recent_articles_for_site.append({
                                     'site': site_url,
