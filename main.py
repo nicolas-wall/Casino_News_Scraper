@@ -43,14 +43,14 @@ def is_recent(publish_date, hours=24):
     diff = now - publish_date
     return diff <= timedelta(hours=hours)
 
-def extract_news(sites, hours=24, max_articles_per_site=5):
+def extract_news(sites, hours=24):
     """Accede a cada sitio y extrae noticias recientes usando newspaper y un fallback."""
     all_news = []
     
-    # Configurar newspaper con timeouts más agresivos
+    # Configurar newspaper con timeouts aumentados para no dejar afuera sitios lentos
     config = Config()
     config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
-    config.request_timeout = 15 # 15 segundos máximo por request
+    config.request_timeout = 60 # 60 segundos máximo por request
     config.memoize_articles = False
     
     for site_url in sites:
@@ -87,9 +87,6 @@ def extract_news(sites, hours=24, max_articles_per_site=5):
                                 'description': desc,
                                 'publish_date': article.publish_date
                             })
-                            
-                            if len(recent_articles_for_site) >= max_articles_per_site:
-                                break
                     except Exception as e:
                         continue # Ignorar artículo que falla
             else:
@@ -97,7 +94,7 @@ def extract_news(sites, hours=24, max_articles_per_site=5):
                 # 2. Fallback: Parsear manualmente con requests y bs4 si newspaper falla
                 try:
                     headers = {'User-Agent': config.browser_user_agent}
-                    response = requests.get(site_url, headers=headers, timeout=15)
+                    response = requests.get(site_url, headers=headers, timeout=60)
                     response.raise_for_status()
                     
                     soup = BeautifulSoup(response.text, 'html.parser')
@@ -117,7 +114,7 @@ def extract_news(sites, hours=24, max_articles_per_site=5):
                             
                     print(f"  -> Fallback detectó {len(found_urls)} posibles URLs de artículos.")
                     
-                    for url in list(found_urls)[:10]: # Limitar la revisión del fallback para ser rápidos
+                    for url in list(found_urls): # Revisar todos los enlaces encontrados en el fallback
                         try:
                             # Parsear artículo individual con newspaper
                             article = Article(url, config=config)
@@ -132,9 +129,6 @@ def extract_news(sites, hours=24, max_articles_per_site=5):
                                     'description': article.meta_description,
                                     'publish_date': article.publish_date
                                 })
-                                
-                                if len(recent_articles_for_site) >= max_articles_per_site:
-                                    break
                         except Exception:
                             continue
                 except Exception as eval_e:
