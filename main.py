@@ -336,14 +336,14 @@ def generate_html_report(news_data):
 <body style="font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background-color:#111111;margin:0;padding:0;color:#e5e5e5;-webkit-font-smoothing:antialiased;">
     <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111;">
         <tr><td align="center" style="padding:16px;">
-            <table width="100%" cellpadding="0" cellspacing="0" style="max-width:900px;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="max-width:1200px;">
 
                 <!-- Hero Banner -->
                 <tr><td style="padding:0 0 24px 0;">
                     <table width="100%" cellpadding="0" cellspacing="0" style="border-radius:16px;overflow:hidden;background:#1a1a1a;">
                         <tr><td background="{HERO_URL}" style="background-image:url('{HERO_URL}');background-size:cover;background-position:center;height:200px;" valign="bottom">
                             <!--[if gte mso 9]>
-                            <v:rect xmlns:v="urn:schemas-microsoft-com:vml" fill="true" stroke="false" style="width:900px;height:200px;">
+                            <v:rect xmlns:v="urn:schemas-microsoft-com:vml" fill="true" stroke="false" style="width:1200px;height:200px;">
                             <v:fill type="tile" src="{HERO_URL}" />
                             <v:textbox inset="0,0,0,0">
                             <![endif]-->
