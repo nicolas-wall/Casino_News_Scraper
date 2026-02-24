@@ -120,7 +120,6 @@ def extract_from_rss(site_url, feed_url, hours=24):
             # Extraer descripción
             desc = ''
             if hasattr(entry, 'summary') and entry.summary:
-                # Limpiar HTML de la descripción
                 desc_soup = BeautifulSoup(entry.summary, 'html.parser')
                 desc = desc_soup.get_text(strip=True)
             elif hasattr(entry, 'description') and entry.description:
@@ -130,12 +129,35 @@ def extract_from_rss(site_url, feed_url, hours=24):
             if not desc:
                 desc = "Sin descripción disponible."
             
+            # Extraer imagen del artículo
+            image_url = ''
+            # 1. media:content o media:thumbnail
+            if hasattr(entry, 'media_content') and entry.media_content:
+                for media in entry.media_content:
+                    if 'image' in media.get('type', '') or media.get('medium') == 'image':
+                        image_url = media.get('url', '')
+                        break
+            if not image_url and hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
+                image_url = entry.media_thumbnail[0].get('url', '')
+            # 2. Enclosures
+            if not image_url and hasattr(entry, 'enclosures') and entry.enclosures:
+                for enc in entry.enclosures:
+                    if 'image' in enc.get('type', ''):
+                        image_url = enc.get('href', enc.get('url', ''))
+                        break
+            # 3. Imagen dentro del summary HTML
+            if not image_url and hasattr(entry, 'summary') and entry.summary:
+                img_tag = BeautifulSoup(entry.summary, 'html.parser').find('img')
+                if img_tag and img_tag.get('src'):
+                    image_url = img_tag['src']
+            
             articles.append({
                 'site': site_url,
                 'title': title,
                 'url': link,
                 'description': desc,
-                'publish_date': pub_date
+                'publish_date': pub_date,
+                'image': image_url
             })
     except Exception as e:
         print(f"  -> Error leyendo RSS: {e}")
@@ -184,7 +206,8 @@ def extract_from_scraping(site_url, hours=24):
                             'title': article.title,
                             'url': article.url,
                             'description': desc or "Sin descripción disponible.",
-                            'publish_date': article.publish_date
+                            'publish_date': article.publish_date,
+                            'image': article.top_image or ''
                         })
                 except Exception:
                     continue
@@ -230,7 +253,8 @@ def extract_from_scraping(site_url, hours=24):
                                 'title': article.title,
                                 'url': article.url,
                                 'description': article.meta_description or "Sin descripción disponible.",
-                                'publish_date': article.publish_date
+                                'publish_date': article.publish_date,
+                                'image': article.top_image or ''
                             })
                     except Exception:
                         continue
@@ -268,69 +292,159 @@ def extract_news(sites, hours=24):
 # ─── Generador de Reporte HTML ───────────────────────────────────────────────
 
 def generate_html_report(news_data):
-    """Genera un string con código HTML bonito para el correo."""
+    """Genera un string con código HTML premium estilo app de noticias."""
     
-    html_content = """
+    # Determinar saludo según la hora
+    hora = datetime.now().hour
+    if hora < 12:
+        saludo = "☀️ ¡Buenos días, Nico!"
+        subtitulo = "Arrancamos el día con las últimas novedades de la industria."
+    elif hora < 18:
+        saludo = "👋 ¡Buenas tardes, Nico!"
+        subtitulo = "Acá tenés un resumen fresco de lo que pasó hoy."
+    else:
+        saludo = "🌙 ¡Buenas noches, Nico!"
+        subtitulo = "Antes de cerrar el día, mirá lo que pasó en la industria."
+    
+    fecha_hoy = datetime.now().strftime("%A %d de %B, %Y").capitalize()
+    total = len(news_data) if news_data else 0
+    
+    # Agrupar noticias por dominio para el resumen
+    sites_with_news = {}
+    if news_data:
+        for item in news_data:
+            domain = item['site'].split('//')[-1].split('/')[0]
+            sites_with_news[domain] = sites_with_news.get(domain, 0) + 1
+    
+    html_content = f"""
     <!DOCTYPE html>
     <html lang="es">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f8; margin: 0; padding: 20px; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
-            .header { background-color: #2c3e50; color: #ffffff; padding: 25px 20px; text-align: center; }
-            .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-            .header p { margin: 10px 0 0 0; font-size: 14px; opacity: 0.8; }
-            .content { padding: 30px 20px; }
-            .article { margin-bottom: 30px; border-bottom: 1px solid #eee; padding-bottom: 20px; }
-            .article:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
-            .source { display: inline-block; background-color: #e0e7ff; color: #3730a3; padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
-            .method { display: inline-block; background-color: #d1fae5; color: #065f46; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
-            .title { margin: 0 0 10px 0; font-size: 18px; line-height: 1.4; color: #1f2937; }
-            .title a { color: #2563eb; text-decoration: none; transition: color 0.2s; }
-            .title a:hover { color: #1d4ed8; text-decoration: underline; }
-            .description { font-size: 14px; color: #4b5563; line-height: 1.6; margin: 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis;}
-            .footer { background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; }
-            .no-news { text-align: center; padding: 40px 20px; color: #64748b; font-style: italic; }
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #0f172a; margin: 0; padding: 20px; color: #e2e8f0; }}
+            .container {{ max-width: 620px; margin: 0 auto; }}
+            
+            /* Header / Greeting */
+            .greeting {{ background: linear-gradient(135deg, #1e293b 0%, #334155 100%); border-radius: 16px; padding: 32px 28px; margin-bottom: 20px; }}
+            .greeting h1 {{ margin: 0 0 8px 0; font-size: 26px; font-weight: 700; color: #f8fafc; }}
+            .greeting .subtitle {{ margin: 0 0 16px 0; font-size: 15px; color: #94a3b8; line-height: 1.5; }}
+            .greeting .date {{ font-size: 13px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; }}
+            
+            /* Stats bar */
+            .stats {{ display: flex; background: #1e293b; border-radius: 12px; padding: 16px 20px; margin-bottom: 20px; gap: 20px; }}
+            .stat {{ text-align: center; flex: 1; }}
+            .stat-number {{ font-size: 24px; font-weight: 700; color: #38bdf8; }}
+            .stat-label {{ font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }}
+            
+            /* Article card */
+            .card {{ background: #1e293b; border-radius: 12px; overflow: hidden; margin-bottom: 16px; transition: transform 0.2s; }}
+            .card-image {{ width: 100%; height: 200px; object-fit: cover; display: block; }}
+            .card-body {{ padding: 20px 22px; }}
+            .card-source {{ display: inline-block; background: rgba(99, 102, 241, 0.15); color: #818cf8; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }}
+            .card-title {{ margin: 0 0 10px 0; font-size: 18px; line-height: 1.4; font-weight: 600; }}
+            .card-title a {{ color: #f1f5f9; text-decoration: none; }}
+            .card-title a:hover {{ color: #38bdf8; }}
+            .card-desc {{ font-size: 14px; color: #94a3b8; line-height: 1.6; margin: 0 0 14px 0; }}
+            .card-cta {{ display: inline-block; color: #38bdf8; font-size: 13px; font-weight: 600; text-decoration: none; }}
+            .card-cta:hover {{ color: #7dd3fc; }}
+            
+            /* No image card variant */
+            .card-no-img .card-body {{ padding: 22px; }}
+            .card-no-img .card-title {{ font-size: 16px; }}
+            
+            /* Footer */
+            .footer {{ text-align: center; padding: 24px 20px; font-size: 12px; color: #475569; }}
+            .footer a {{ color: #64748b; text-decoration: none; }}
+            
+            /* No news */
+            .no-news {{ text-align: center; padding: 60px 20px; color: #64748b; }}
+            .no-news-emoji {{ font-size: 48px; margin-bottom: 16px; }}
+            .no-news p {{ font-size: 16px; line-height: 1.6; }}
+            
+            /* Divider */
+            .section-label {{ font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: #475569; margin: 24px 0 16px 4px; font-weight: 600; }}
         </style>
     </head>
     <body>
         <div class="container">
-            <div class="header">
-                <h1>Reporte Diario de Noticias</h1>
-                <p>Las últimas 24 horas resumidas para ti</p>
+            <!-- Greeting -->
+            <div class="greeting">
+                <h1>{saludo}</h1>
+                <p class="subtitle">{subtitulo}</p>
+                <p class="date">📅 {fecha_hoy}</p>
             </div>
-            <div class="content">
     """
     
     if not news_data:
         html_content += """
-                <div class="no-news">
-                    <p>No se encontraron noticias publicadas en las últimas 24 horas.</p>
-                </div>
+            <div class="no-news">
+                <div class="no-news-emoji">📭</div>
+                <p>Hoy fue un día tranquilo.<br>No se encontraron noticias nuevas en las últimas 24 horas.</p>
+            </div>
         """
     else:
+        # Stats bar
+        html_content += f"""
+            <table width="100%" cellpadding="0" cellspacing="0" style="background: #1e293b; border-radius: 12px; margin-bottom: 20px;">
+                <tr>
+                    <td style="text-align: center; padding: 16px;">
+                        <div style="font-size: 24px; font-weight: 700; color: #38bdf8;">{total}</div>
+                        <div style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px;">Noticias</div>
+                    </td>
+                    <td style="text-align: center; padding: 16px;">
+                        <div style="font-size: 24px; font-weight: 700; color: #a78bfa;">{len(sites_with_news)}</div>
+                        <div style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px;">Fuentes</div>
+                    </td>
+                    <td style="text-align: center; padding: 16px;">
+                        <div style="font-size: 24px; font-weight: 700; color: #34d399;">24h</div>
+                        <div style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px;">Ventana</div>
+                    </td>
+                </tr>
+            </table>
+        """
+        
+        html_content += '<div class="section-label">📰 Últimas noticias</div>'
+        
         for item in news_data:
             domain = item['site'].split('//')[-1].split('/')[0]
             
             desc = item.get('description') or "Sin descripción disponible."
-            if len(desc) > 250:
-                desc = desc[:247] + "..."
-                
-            html_content += f"""
-                <div class="article">
-                    <div class="source">{domain}</div>
-                    <h2 class="title"><a href="{item['url']}" target="_blank">{item['title']}</a></h2>
-                    <p class="description">{desc}</p>
-                </div>
-            """
+            if len(desc) > 200:
+                desc = desc[:197] + "..."
             
-    fecha_hoy = datetime.now().strftime("%d de %B, %Y")
-    html_content += f"""
+            image = item.get('image', '')
+            
+            if image:
+                html_content += f"""
+            <div class="card">
+                <a href="{item['url']}" target="_blank"><img class="card-image" src="{image}" alt="" onerror="this.style.display='none'"></a>
+                <div class="card-body">
+                    <span class="card-source">{domain}</span>
+                    <h2 class="card-title"><a href="{item['url']}" target="_blank">{item['title']}</a></h2>
+                    <p class="card-desc">{desc}</p>
+                    <a href="{item['url']}" target="_blank" class="card-cta">Leer artículo completo →</a>
+                </div>
             </div>
+                """
+            else:
+                html_content += f"""
+            <div class="card card-no-img">
+                <div class="card-body">
+                    <span class="card-source">{domain}</span>
+                    <h2 class="card-title"><a href="{item['url']}" target="_blank">{item['title']}</a></h2>
+                    <p class="card-desc">{desc}</p>
+                    <a href="{item['url']}" target="_blank" class="card-cta">Leer artículo completo →</a>
+                </div>
+            </div>
+                """
+    
+    html_content += f"""
+            <!-- Footer -->
             <div class="footer">
-                Generado automáticamente el {fecha_hoy} • Casino News Scraper
+                <p>Generado con ❤️ por Casino News Scraper</p>
+                <p style="margin-top: 8px; font-size: 11px;">Recibís este mail cada mañana automáticamente.<br>¿Querés agregar o sacar fuentes? Editá el archivo <code>sites.txt</code> en el repo.</p>
             </div>
         </div>
     </body>
